@@ -99,10 +99,7 @@ export default function LoginPage() {
               Accesos de demostración
             </p>
             <ul className="space-y-1.5 text-xs text-sidebar-foreground/70">
-              <li>
-                <span className="font-medium text-emerald-300">Super Admin:</span>{" "}
-                super@comerzia.com · admin123
-              </li>
+              
               <li>
                 <span className="font-medium text-emerald-300">Negocio demo:</span>{" "}
                 demo@comerzia.com · demo123
