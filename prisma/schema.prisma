@@ -1,0 +1,764 @@
+// COMERZIA — Gestión inteligente para el comercio moderno
+// Esquema de base de datos (PostgreSQL / Supabase) — arquitectura SaaS multi-tenant
+//
+// Este esquema refleja 1:1 las tablas creadas por los scripts SQL de supabase/:
+//   01_schema.sql → 02_rls.sql → 03_seed.sql → 04_saas_admin.sql
+// Toda tabla operativa lleva organization_id: el aislamiento multi-tenant se
+// aplica en cada consulta de la aplicación (src/lib/tenant.ts).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// NÚCLEO SaaS
+// ════════════════════════════════════════════════════════════════════════════
+
+model Organization {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  slug         String    @unique
+  taxId        String?   @map("tax_id")
+  address      String?
+  phone        String?
+  email        String?
+  currency     String    @default("COP")
+  timezone     String    @default("America/Bogota")
+  logoUrl      String?   @map("logo_url")
+  primaryColor String?   @map("primary_color")
+  status       String    @default("activa") // activa | suspendida | cancelada | prueba
+  trialEndsAt  DateTime? @map("trial_ends_at") @db.Timestamptz(6)
+  suspendedAt  DateTime? @map("suspended_at") @db.Timestamptz(6)
+  notes        String?
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  members        OrganizationMember[]
+  subscription   Subscription?
+  settings       OrganizationSetting?
+  limitOverride  OrganizationLimitOverride?
+  orgModules     OrganizationModule[]
+  saasInvoices   SaasInvoice[]
+  saasPayments   SaasPayment[]
+  renewals       SaasRenewal[]
+  cancellations  SaasCancellation[]
+  tickets        SupportTicket[]
+  notifications  PlatformNotification[]
+  auditLogs      AuditLog[]
+  branches       Branch[]
+  products       Product[]
+  customers      Customer[]
+  sales          Sale[]
+  purchases      Purchase[]
+  suppliers      Supplier[]
+  quotations     Quotation[]
+  coupons        Coupon[]
+  cashSessions   CashSession[]
+  cashMovements  CashMovement[]
+  financeTx      FinanceTransaction[]
+  movements      Movement[]
+
+  @@map("organizations")
+}
+
+model Profile {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String    @unique
+  fullName     String?   @map("full_name")
+  avatarUrl    String?   @map("avatar_url")
+  phone        String?
+  isSuperAdmin Boolean   @default(false) @map("is_super_admin")
+  passwordHash String?   @map("password_hash")
+  status       String    @default("activo") // activo | suspendido
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  members  OrganizationMember[]
+  sessions Session[]
+
+  @@map("profiles")
+}
+
+model OrganizationMember {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  userId           String   @map("user_id") @db.Uuid
+  role             String   @default("CAJERO") // OWNER | ADMIN | CAJERO | VENDEDOR | INVENTARIO | COMPRAS | CONTADOR | LOGISTICA | AUDITOR
+  branchId         String?  @map("branch_id") @db.Uuid
+  active           Boolean  @default(true)
+  canViewCosts     Boolean  @default(false) @map("can_view_costs")
+  canAuthorize     Boolean  @default(false) @map("can_authorize")
+  discountLimitPct Float    @default(0) @map("discount_limit_pct")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  profile      Profile      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@map("organization_members")
+}
+
+model Session {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  profile Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Plan {
+  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code          String  @unique // basico | profesional | premium
+  name          String
+  description   String?
+  monthlyPrice  Float   @map("monthly_price")
+  billingPeriod String  @default("mes") @map("billing_period")
+  currency      String  @default("COP")
+  isActive      Boolean @default(true) @map("is_active")
+  maxBranches   Int?    @map("max_branches")
+  maxWarehouses Int?    @map("max_warehouses")
+  maxUsers      Int?    @map("max_users")
+  maxProducts   Int?    @map("max_products")
+  maxCustomers  Int?    @map("max_customers")
+  maxPos        Int?    @map("max_pos")
+  maxPriceLists Int?    @map("max_price_lists")
+  storageGb     Int?    @map("storage_gb")
+  apiAccess     String  @default("ninguno") @map("api_access") // ninguno | limitada | completa
+  sortOrder     Int     @default(0) @map("sort_order")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId      String    @unique @map("organization_id") @db.Uuid
+  planId              String    @map("plan_id") @db.Uuid
+  status              String    @default("activa") // prueba | activa | vencida | cancelada
+  startedAt           DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  currentPeriodEnd    DateTime? @map("current_period_end") @db.Timestamptz(6)
+  cancelAtPeriodEnd   Boolean   @default(false) @map("cancel_at_period_end")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
+
+  @@map("subscriptions")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PANEL ADMINISTRATIVO DEL SaaS (Super Admin)
+// ════════════════════════════════════════════════════════════════════════════
+
+model PlatformModule {
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code        String  @unique
+  name        String
+  description String?
+  isActive    Boolean @default(true) @map("is_active")
+  sortOrder   Int     @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  orgModules OrganizationModule[]
+
+  @@map("platform_modules")
+}
+
+model OrganizationModule {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  moduleId       String   @map("module_id") @db.Uuid
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  module       PlatformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, moduleId])
+  @@map("organization_modules")
+}
+
+model OrganizationLimitOverride {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @unique @map("organization_id") @db.Uuid
+  maxUsers       Int?      @map("max_users")
+  maxProducts    Int?      @map("max_products")
+  maxBranches    Int?      @map("max_branches")
+  storageGb      Int?      @map("storage_gb")
+  expiresAt      DateTime? @map("expires_at") @db.Timestamptz(6)
+  note           String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_limit_overrides")
+}
+
+model OrganizationSetting {
+  organizationId String  @id @map("organization_id") @db.Uuid
+  storeName      String  @default("Mi Comercio") @map("store_name")
+  taxId          String? @map("tax_id")
+  address        String?
+  currency       String  @default("COP")
+  taxRate        Float   @default(19) @map("tax_rate")
+  lowStockWarn   Boolean @default(true) @map("low_stock_warn")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_settings")
+}
+
+model SaasInvoice {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  number         String    @unique // S-2026-00001
+  organizationId String    @map("organization_id") @db.Uuid
+  subscriptionId String?   @map("subscription_id") @db.Uuid
+  periodStart    DateTime  @map("period_start") @db.Timestamptz(6)
+  periodEnd      DateTime  @map("period_end") @db.Timestamptz(6)
+  amount         Float
+  taxRate        Float     @default(19) @map("tax_rate")
+  taxAmount      Float     @map("tax_amount")
+  total          Float
+  status         String    @default("pendiente") // pendiente | pagada | vencida | anulada
+  issuedAt       DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
+  dueAt          DateTime  @map("due_at") @db.Timestamptz(6)
+  paidAt         DateTime? @map("paid_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  payments     SaasPayment[]
+
+  @@map("saas_invoices")
+}
+
+model SaasPayment {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  invoiceId      String?  @map("invoice_id") @db.Uuid
+  amount         Float
+  method         String   @default("transferencia") // efectivo | transferencia | tarjeta | pse | otro
+  reference      String?
+  status         String   @default("confirmado") // pendiente | confirmado | rechazado
+  notes          String?
+  receivedAt     DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invoice      SaasInvoice?  @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  @@map("saas_payments")
+}
+
+model SaasRenewal {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  subscriptionId    String?  @map("subscription_id") @db.Uuid
+  previousPeriodEnd DateTime? @map("previous_period_end") @db.Timestamptz(6)
+  newPeriodEnd      DateTime @map("new_period_end") @db.Timestamptz(6)
+  invoiceNumber     String?  @map("invoice_number")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("saas_renewals")
+}
+
+model SaasCancellation {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  subscriptionId String?   @map("subscription_id") @db.Uuid
+  type           String    @default("fin_periodo") // inmediata | fin_periodo
+  reason         String?
+  status         String    @default("programada") // programada | efectiva | revertida
+  requestedAt    DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
+  effectiveAt    DateTime? @map("effective_at") @db.Timestamptz(6)
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("saas_cancellations")
+}
+
+model PlatformCoupon {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code           String    @unique
+  discountType   String    @default("porcentaje") @map("discount_type") // porcentaje | monto
+  value          Float
+  maxRedemptions Int?      @map("max_redemptions")
+  redemptions    Int       @default(0)
+  startsAt       DateTime? @map("starts_at") @db.Timestamptz(6)
+  endsAt         DateTime? @map("ends_at") @db.Timestamptz(6)
+  isActive       Boolean   @default(true) @map("is_active")
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("platform_coupons")
+}
+
+model SupportTicket {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  number         String    @unique // T-2026-00001
+  organizationId String    @map("organization_id") @db.Uuid
+  subject        String
+  description    String    @default("")
+  status         String    @default("abierto") // abierto | pendiente | resuelto | cerrado
+  priority       String    @default("media") // baja | media | alta | urgente
+  category       String?
+  createdBy      String?   @map("created_by")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  closedAt       DateTime? @map("closed_at") @db.Timestamptz(6)
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  messages     SupportTicketMessage[]
+
+  @@map("support_tickets")
+}
+
+model SupportTicketMessage {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId   String   @map("ticket_id") @db.Uuid
+  authorName String   @map("author_name")
+  authorRole String   @default("organizacion") @map("author_role") // organizacion | soporte
+  body       String
+  isInternal Boolean  @default(false) @map("is_internal")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@map("support_ticket_messages")
+}
+
+model PlatformNotification {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title          String
+  body           String    @default("")
+  audience       String    @default("todas") // todas | organizacion
+  organizationId String?   @map("organization_id") @db.Uuid
+  channel        String    @default("in_app") // in_app | email
+  status         String    @default("enviada") // borrador | enviada
+  sentAt         DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdBy      String?   @map("created_by")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("platform_notifications")
+}
+
+model PlatformIntegration {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code             String    @unique
+  name             String
+  category         String?
+  isActive         Boolean   @default(false) @map("is_active")
+  config           Json      @default("{}")
+  lastErrorAt      DateTime? @map("last_error_at") @db.Timestamptz(6)
+  lastErrorMessage String?   @map("last_error_message")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  logs PlatformIntegrationLog[]
+
+  @@map("platform_integrations")
+}
+
+model PlatformIntegrationLog {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  integrationId  String   @map("integration_id") @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  level          String   @default("info") // info | warn | error
+  message        String
+  detail         Json?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  integration PlatformIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@map("platform_integration_logs")
+}
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("platform_settings")
+}
+
+model AuditLog {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  userId         String?  @map("user_id") @db.Uuid
+  action         String
+  entity         String
+  entityId       String?  @map("entity_id")
+  changes        Json?
+  ipAddress      String?  @map("ip_address")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("audit_logs")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SUCURSALES
+// ════════════════════════════════════════════════════════════════════════════
+
+model Branch {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  code           String?
+  address        String?
+  phone          String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("branches")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// OPERACIÓN DEL COMERCIO (todas las tablas llevan organization_id)
+// ════════════════════════════════════════════════════════════════════════════
+
+model Product {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  name             String
+  sku              String
+  barcode          String?
+  internalCode     String?  @map("internal_code")
+  reference        String?
+  description      String?
+  longDescription  String?  @map("long_description")
+  categoryId       String?  @map("category_id") @db.Uuid
+  brandId          String?  @map("brand_id") @db.Uuid
+  supplierId       String?  @map("supplier_id") @db.Uuid
+  unit             String   @default("unidad")
+  // Módulo de conversión de unidades: compra por presentación, venta por unidad mínima
+  saleUnit         String?  @map("sale_unit")           // unidad mínima de venta (hoja, metro, unidad…)
+  purchaseUnit     String?  @map("purchase_unit")       // unidad de compra (resma, rollo, caja…)
+  unitsPerPurchase Float?   @map("units_per_purchase")  // cuántas unidades de venta trae 1 unidad de compra
+  costPrice        Float    @default(0) @map("cost_price")
+  salePrice        Float    @default(0) @map("sale_price")
+  wholesalePrice   Float?   @map("wholesale_price")
+  retailPrice      Float?   @map("retail_price")
+  distributorPrice Float?   @map("distributor_price")
+  taxRate          Float    @default(19) @map("tax_rate")
+  stock            Float    @default(0)
+  minStock         Float    @default(5) @map("min_stock")
+  maxStock         Float?   @map("max_stock")
+  weightKg         Float?   @map("weight_kg")
+  storageLocation  String?  @map("storage_location")
+  imageUrl         String?  @map("image_url")
+  category         String?
+  brand            String?
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplier       Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  saleItems      SaleItem[]
+  movements      Movement[]
+  purchaseItems  PurchaseItem[]
+  quotationItems QuotationItem[]
+
+  @@unique([organizationId, sku])
+  @@index([organizationId, active])
+  @@index([organizationId, supplierId])
+  @@map("products")
+}
+
+model Customer {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  docType        String?  @map("doc_type") // CC | NIT | CE | PAS
+  docId          String?  @map("doc_id")
+  email          String?
+  phone          String?
+  type           String   @default("particular") // particular | empresa
+  priceList      String   @default("retail") @map("price_list") // retail | wholesale | distributor
+  creditLimit    Float    @default(0) @map("credit_limit")
+  loyaltyPoints  Int      @default(0) @map("loyalty_points")
+  address        String?
+  notes          String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sales        Sale[]
+
+  @@map("customers")
+}
+
+model Sale {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  branchId       String?   @map("branch_id") @db.Uuid
+  cashSessionId  String?   @map("cash_session_id") @db.Uuid
+  customerId     String?   @map("customer_id") @db.Uuid
+  customerName   String    @default("Cliente de mostrador") @map("customer_name")
+  folio          String
+  subtotal       Float     @default(0)
+  discount       Float     @default(0)
+  couponCode     String?   @map("coupon_code")
+  couponDiscount Float     @default(0) @map("coupon_discount")
+  tax            Float     @default(0)
+  total          Float     @default(0)
+  paymentMethod  String    @default("efectivo") @map("payment_method") // efectivo | tarjeta | transferencia | credito
+  status         String    @default("completada") // completada | pendiente | cancelada
+  cufe           String?
+  einvoiceStatus String    @default("pendiente") @map("einvoice_status") // pendiente | emitida | rechazada
+  note           String?
+  createdById    String?   @map("created_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  items        SaleItem[]
+
+  @@unique([organizationId, folio])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@map("sales")
+}
+
+model SaleItem {
+  id             String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  saleId         String @map("sale_id") @db.Uuid
+  productId      String? @map("product_id") @db.Uuid
+  variantId      String? @map("variant_id") @db.Uuid
+  name           String
+  sku            String?
+  quantity       Float  @default(1)
+  unitPrice      Float  @default(0) @map("unit_price")
+  unitCost       Float  @default(0) @map("unit_cost")
+  subtotal       Float  @default(0)
+
+  sale    Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@map("sale_items")
+}
+
+model Movement {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  warehouseId  String?  @map("warehouse_id") @db.Uuid
+  type         String // entrada | salida | ajuste | traslado
+  quantity     Float    @default(0)
+  unitCost     Float?   @map("unit_cost")
+  referenceType String? @map("reference_type") // sale | purchase | manual | count
+  referenceId  String?  @map("reference_id") @db.Uuid
+  note         String?
+  createdById  String?  @map("created_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, productId, createdAt(sort: Desc)])
+  @@map("inventory_movements")
+}
+
+model CashSession {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  branchId       String?   @map("branch_id") @db.Uuid
+  cashRegisterId String?   @map("cash_register_id") @db.Uuid
+  openedAt       DateTime  @default(now()) @map("opened_at") @db.Timestamptz(6)
+  closedAt       DateTime? @map("closed_at") @db.Timestamptz(6)
+  openingAmount  Float     @default(0) @map("opening_amount")
+  closingAmount  Float?    @map("closing_amount")
+  expectedAmount Float?    @map("expected_amount")
+  difference     Float?
+  status         String    @default("abierta") // abierta | cerrada
+  openedById     String?   @map("opened_by") @db.Uuid
+  openedByName   String?   @map("opened_by_name")
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  movements    CashMovement[]
+
+  @@map("cash_sessions")
+}
+
+model CashMovement {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  sessionId      String   @map("session_id") @db.Uuid
+  type           String // ingreso | egreso
+  amount         Float    @default(0)
+  concept        String
+  source         String   @default("manual") // manual | venta
+  createdById    String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  session CashSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("cash_movements")
+}
+
+model Quotation {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  folio          String
+  customerId     String?   @map("customer_id") @db.Uuid
+  customerName   String    @default("Cliente de mostrador") @map("customer_name")
+  status         String    @default("borrador") // borrador | enviada | aprobada | rechazada | convertida
+  validUntil     DateTime? @map("valid_until") @db.Date
+  subtotal       Float     @default(0)
+  discount       Float     @default(0)
+  tax            Float     @default(0)
+  total          Float     @default(0)
+  note           String?
+  createdById    String?   @map("created_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  items        QuotationItem[]
+
+  @@unique([organizationId, folio])
+  @@map("quotations")
+}
+
+model QuotationItem {
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quotationId String  @map("quotation_id") @db.Uuid
+  productId   String? @map("product_id") @db.Uuid
+  name        String
+  sku         String?
+  quantity    Float   @default(1)
+  unitPrice   Float   @default(0) @map("unit_price")
+  subtotal    Float   @default(0)
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  product   Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@map("quotation_items")
+}
+
+model Supplier {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  taxId          String?  @map("tax_id")
+  contactName    String?  @map("contact_name")
+  email          String?
+  phone          String?
+  address        String?
+  paymentTerms   String   @default("contado") @map("payment_terms") // contado | credito_15 | credito_30
+  creditLimit    Float?   @map("credit_limit")
+  notes          String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  purchases    Purchase[]
+  products     Product[]
+
+  @@map("suppliers")
+}
+
+model Purchase {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  folio          String
+  supplierId     String?   @map("supplier_id") @db.Uuid
+  supplierName   String    @map("supplier_name")
+  status         String    @default("pendiente") // pendiente | recibida | parcial | cancelada
+  subtotal       Float     @default(0)
+  tax            Float     @default(0)
+  total          Float     @default(0)
+  paid           Boolean   @default(false)
+  note           String?
+  createdById    String?   @map("created_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  receivedAt     DateTime? @map("received_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplier     Supplier?    @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  items        PurchaseItem[]
+
+  @@unique([organizationId, folio])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseId String  @map("purchase_id") @db.Uuid
+  productId  String? @map("product_id") @db.Uuid
+  name       String
+  sku        String?
+  quantity   Float   @default(1)
+  receivedQty Float  @default(0) @map("received_qty")
+  unitCost   Float   @default(0) @map("unit_cost")
+  subtotal   Float   @default(0)
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product  Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@map("purchase_items")
+}
+
+model Coupon {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  code           String
+  type           String    @default("porcentaje") // porcentaje | monto
+  value          Float     @default(0)
+  minTotal       Float     @default(0) @map("min_total")
+  maxUses        Int?      @map("max_uses")
+  usageCount     Int       @default(0) @map("usage_count")
+  active         Boolean   @default(true)
+  expiresAt      DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, code])
+  @@map("coupons")
+}
+
+model FinanceTransaction {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  type           String // ingreso | egreso
+  category       String   @default("operativo") // operativo | abono_cliente | pago_proveedor | otro
+  amount         Float    @default(0)
+  method         String   @default("efectivo")
+  description    String
+  refType        String?  @map("ref_type") // sale | purchase
+  refId          String?  @map("ref_id") @db.Uuid
+  createdById    String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("finance_transactions")
+}
